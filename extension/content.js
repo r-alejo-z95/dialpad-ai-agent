@@ -64,27 +64,37 @@ async function dialNumber(phone) {
 function monitorCallStatus() {
   console.log("Monitoring call status...");
   
+  let connectionDetected = false;
+
   const observer = new MutationObserver((mutations) => {
-    // Check for indicators of an active call
-    // Examples: A timer (00:01), a "Hangup" button becoming active, specific text "Connected"
-    
-    const bodyText = document.body.innerText;
-    
-    // Heuristics for "Active Call"
-    // 1. Timer pattern: 00:00 or 0:00 (Check for a span containing time pattern that increments)
-    // 2. "Connected" text
-    // 3. "End Call" button presence vs "Call" button
-    
-    // Simplistic check: Look for a timer-like element that wasn't there or "Hang up" button
     const hangupBtn = document.querySelector('[aria-label="Hang up"], [aria-label="End call"]');
-    const timer = document.body.innerText.match(/\b\d{1,2}:\d{2}\b/); // Matches 0:00, 12:34
+    const timer = document.body.innerText.match(/\b\d{1,2}:\d{2}\b/);
     
-    if (hangupBtn && timer) {
+    // Check if we are still on a call screen or if it returned to dialer
+    const dialBtn = document.querySelector('[aria-label="Call"], button svg[data-icon="phone"]');
+
+    if (hangupBtn && timer && !connectionDetected) {
       console.log("Active call detected!");
-      observer.disconnect(); // Stop watching once detected
-      
-      // Notify Background
+      connectionDetected = true;
       chrome.runtime.sendMessage({ type: "CALL_CONNECTED_DETECTED" });
+    }
+
+    // If we had a connection and now the hangup button is gone, the call ended
+    if (connectionDetected && !hangupBtn) {
+      console.log("Call ended.");
+      observer.disconnect();
+      chrome.runtime.sendMessage({ type: "CALL_DISCONNECTED" });
+    }
+
+    // If we never detected a connection and we are back at the dialer, it failed
+    if (!connectionDetected && dialBtn && !hangupBtn) {
+       // Check if there's some error text like "Busy" or "No answer"
+       const bodyText = document.body.innerText;
+       if (bodyText.includes("Busy") || bodyText.includes("Declined") || bodyText.includes("Missed")) {
+          console.log("Call failed detected.");
+          observer.disconnect();
+          chrome.runtime.sendMessage({ type: "CALL_FAILED", reason: "Line busy or declined" });
+       }
     }
   });
 
@@ -92,6 +102,10 @@ function monitorCallStatus() {
   
   // Safety timeout: Stop observing after 60s if no connection
   setTimeout(() => {
-    observer.disconnect();
+    if (!connectionDetected) {
+      console.log("Monitor timeout - no connection detected.");
+      observer.disconnect();
+      chrome.runtime.sendMessage({ type: "CALL_FAILED", reason: "Timeout" });
+    }
   }, 60000);
 }

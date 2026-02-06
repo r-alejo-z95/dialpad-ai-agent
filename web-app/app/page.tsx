@@ -24,8 +24,49 @@ export default function Dashboard() {
   const [isVapiConnected, setIsVapiConnected] = useState(false);
   const [callStatus, setCallStatus] = useState<"idle" | "connecting" | "active" | "ended">("idle");
   const [callReport, setCallReport] = useState<any>(null);
+  const [agentMode, setAgentMode] = useState<"assistant" | "voicemail" | "human_only">("assistant");
+  const [isAlerting, setIsAlerting] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // --- Helpers ---
+
+  const addLog = (msg: string) => {
+    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  };
+
+  const playAlertSound = () => {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+      gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.5);
+      
+      // Second beep
+      setTimeout(() => {
+        const osc2 = audioCtx.createOscillator();
+        const gain2 = audioCtx.createGain();
+        osc2.connect(gain2);
+        gain2.connect(audioCtx.destination);
+        osc2.type = "sine";
+        osc2.frequency.setValueAtTime(1109.12, audioCtx.currentTime); // C#6
+        gain2.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc2.start();
+        osc2.stop(audioCtx.currentTime + 0.5);
+      }, 200);
+    } catch (e) {
+      console.error("Failed to play alert sound", e);
+    }
+  };
 
   // --- Effects ---
 
@@ -51,6 +92,11 @@ export default function Dashboard() {
     const onCallStart = () => {
       addLog("Vapi: Call started");
       setCallStatus("active");
+      setIsAlerting(true);
+      playAlertSound();
+      
+      // Stop alerting after 5 seconds
+      setTimeout(() => setIsAlerting(false), 5000);
     };
 
     const onCallEnd = (report: any) => {
@@ -71,14 +117,15 @@ export default function Dashboard() {
     };
 
     vapi.on("call-start", onCallStart);
-    vapi.on("call-end", onCallEnd);
+    vapi.on("call-end", onCallEnd as any);
     vapi.on("error", onError);
 
     return () => {
       vapi.off("call-start", onCallStart);
-      vapi.off("call-end", onCallEnd);
+      vapi.off("call-end", onCallEnd as any);
       vapi.off("error", onError);
     };
+
   }, [vapi, campaignState]); // Check dependencies carefully
 
 
@@ -88,52 +135,73 @@ export default function Dashboard() {
       if (event.data.type === "DIALPAD_CALL_CONNECTED") {
         addLog("Received CALL_CONNECTED from Extension");
         startVapiSession(event.data.payload);
+      } else if (event.data.type === "DIALPAD_CALL_FAILED") {
+        addLog(`Call Failed: ${event.data.payload?.reason || "Unknown reason"}`);
+        setCallStatus("ended");
+        if (campaignState === "running") {
+          setTimeout(() => handleNextContact(), 2000);
+        }
+      } else if (event.data.type === "DIALPAD_CALL_DISCONNECTED") {
+        addLog("Call disconnected via Dialpad");
+        // Vapi might already handle this, but good for sync
       }
     };
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [conferenceInfo, dynamicPrompt]);
+  }, [conferenceInfo, dynamicPrompt, campaignState, currentContactIndex]);
 
   // --- Helpers ---
-
-  const addLog = (msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
-  };
 
   const startVapiSession = async (payload: { conferenceInfo: string, dynamicPrompt: string }) => {
     if (!vapi) {
       addLog("Error: Vapi not initialized.");
       return;
     }
-    addLog("Starting Vapi Session...");
+    addLog(`Starting Vapi Session (${agentMode} mode)...`);
     
-    const systemPrompt = `
-      You are an AI assistant for Public Sector Network. Your role is to call public sector professionals to invite them to our upcoming conferences. 
-      Your tone should be professional, polite, and articulate. 
-      You need to gather interest and, if positive, offer to send an email with more information. 
-      Adapt your pitch using the provided conference details and any specific instructions given. 
-      Handle objections gracefully. Speak naturally in English.
-      
-      --- CONFERENCE DETAILS ---
-      ${payload.conferenceInfo}
-      
-      --- SPECIFIC INSTRUCTIONS ---
-      ${payload.dynamicPrompt}
-    `;
+    let systemPrompt = "";
+    let firstMessage = "";
+
+    if (agentMode === "human_only") {
+      systemPrompt = "You are a brief assistant. Your only job is to tell the person to wait one second while you connect them to a representative. Do not engage in long conversation.";
+      firstMessage = "Hello, please stay on the line for one moment while I connect you...";
+    } else if (agentMode === "voicemail") {
+      systemPrompt = "You are an automated assistant. If you detect you are speaking to a voicemail or answering machine, leave a message about our upcoming conference. If a human answers, ask them if you can send them an email and then end the call.";
+      firstMessage = "Hello, I'm calling from Public Sector Network regarding our upcoming event.";
+    } else {
+      systemPrompt = `
+        You are an AI assistant for Public Sector Network. Your role is to call public sector professionals to invite them to our upcoming conferences. 
+        Your tone should be professional, polite, and articulate. 
+        You need to gather interest and, if positive, offer to send an email with more information. 
+        Adapt your pitch using the provided conference details and any specific instructions given. 
+        Handle objections gracefully. Speak naturally in English.
+        
+        --- CONFERENCE DETAILS ---
+        ${payload.conferenceInfo}
+        
+        --- SPECIFIC INSTRUCTIONS ---
+        ${payload.dynamicPrompt}
+      `;
+      firstMessage = "Hello, am I speaking with " + (contacts[currentContactIndex]?.name || "the relevant contact") + "?";
+    }
 
     try {
+      // Vapi start expects messages or a systemPrompt depending on version. 
+      // If systemPrompt fails in types, we use the message format.
       await vapi.start({
         model: {
           provider: "openai",
           model: "gpt-4o",
-          systemPrompt: systemPrompt,
+          messages: [
+            { role: "system", content: systemPrompt }
+          ]
         },
         voice: {
           provider: "11labs", 
-          voiceId: "cjVigVc5kqxnPczPaOcf", // Example voice (Jessica) or use a Vapi default
+          voiceId: "cjVigVc5kqxnPczPaOcf", 
         },
-        firstMessage: "Hello, am I speaking with " + (contacts[currentContactIndex]?.name || "the relevant contact") + "?"
+        firstMessage: firstMessage,
       });
     } catch (e: any) {
       addLog(`Failed to start Vapi: ${e.message}`);
@@ -304,6 +372,24 @@ export default function Dashboard() {
             <h2 className="font-semibold text-gray-700">Campaign Context</h2>
             
             <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Agent Mode</label>
+              <div className="grid grid-cols-3 gap-2">
+                {(["assistant", "voicemail", "human_only"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setAgentMode(mode)}
+                    className={clsx(
+                      "text-[10px] py-2 px-1 rounded border capitalize transition",
+                      agentMode === mode ? "bg-blue-600 text-white border-blue-600" : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                    )}
+                  >
+                    {mode.replace("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Conference Info / URL</label>
               <textarea 
                 className="w-full p-2 border rounded-md text-sm min-h-[80px]"
@@ -364,6 +450,25 @@ export default function Dashboard() {
               <Square size={16} fill="currentColor" /> Stop
             </button>
           </div>
+
+          {/* Visual Alert */}
+          {isAlerting && (
+            <div className="bg-red-600 text-white p-6 rounded-xl shadow-lg flex items-center justify-between animate-bounce">
+              <div className="flex items-center gap-4">
+                <AlertCircle size={32} />
+                <div>
+                  <h3 className="text-xl font-bold">HUMAN ANSWERED!</h3>
+                  <p className="text-sm opacity-90">Switch to Dialpad now to take over if needed.</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsAlerting(false)}
+                className="bg-white text-red-600 px-4 py-1 rounded-full text-sm font-bold"
+              >
+                DISMISS
+              </button>
+            </div>
+          )}
 
           {/* Current Call Status */}
           {callStatus === "active" && (

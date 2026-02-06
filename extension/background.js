@@ -61,34 +61,37 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "CALL_CONNECTED_DETECTED") {
     console.log("Call connected detected via Content Script");
-    
-    // Retrieve stored context
-    chrome.storage.local.get(["currentCall"], (result) => {
-      const { conferenceInfo, dynamicPrompt } = result.currentCall || {};
-
-      // Forward to Dashboard Bridge
-      if (dashboardTabId) {
-        chrome.tabs.sendMessage(dashboardTabId, {
-          type: "ACTIVATE_VAPI",
-          payload: {
-            conferenceInfo,
-            dynamicPrompt
-          }
-        });
-      } else {
-        // Fallback: Query for localhost
-        chrome.tabs.query({ url: "http://localhost:3000/*" }, (tabs) => {
-          if (tabs.length > 0) {
-            chrome.tabs.sendMessage(tabs[0].id, {
-              type: "ACTIVATE_VAPI",
-              payload: {
-                conferenceInfo,
-                dynamicPrompt
-              }
-            });
-          }
-        });
-      }
-    });
+    notifyDashboard("ACTIVATE_VAPI", true);
+  } else if (message.type === "CALL_FAILED") {
+    console.warn("Call failed:", message.reason);
+    notifyDashboard("DIALPAD_CALL_FAILED", { reason: message.reason });
+  } else if (message.type === "CALL_DISCONNECTED") {
+    console.log("Call disconnected");
+    notifyDashboard("DIALPAD_CALL_DISCONNECTED", {});
   }
 });
+
+function notifyDashboard(type, includeContext = false) {
+  const send = (tabId, payload) => {
+    chrome.tabs.sendMessage(tabId, { type, payload });
+  };
+
+  const getPayloadAndSend = (tabId) => {
+    if (includeContext) {
+      chrome.storage.local.get(["currentCall"], (result) => {
+        const { conferenceInfo, dynamicPrompt } = result.currentCall || {};
+        send(tabId, { conferenceInfo, dynamicPrompt });
+      });
+    } else {
+      send(tabId, typeof includeContext === 'object' ? includeContext : {});
+    }
+  };
+
+  if (dashboardTabId) {
+    getPayloadAndSend(dashboardTabId);
+  } else {
+    chrome.tabs.query({ url: "http://localhost:3000/*" }, (tabs) => {
+      if (tabs.length > 0) getPayloadAndSend(tabs[0].id);
+    });
+  }
+}
