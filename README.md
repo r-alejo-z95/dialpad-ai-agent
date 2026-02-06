@@ -1,15 +1,36 @@
-# Dialpad AI Agent
+# Dialpad AI Power Dialer & Agent
 
-This project automates conference invitation calls using a Next.js Dashboard, Gemini Flash 2.0 Lite (OCR), and Vapi (Voice AI), controlled via a Chrome Extension.
+An intelligent automation system for Dialpad that combines OCR contact extraction, smart phone number prioritization, and AI voice capabilities to streamline large-scale calling campaigns.
 
-## Prerequisites
+## 🚀 Key Features
+
+*   **Intelligent OCR Extraction**: Uses **Gemini 2.0 Flash Lite** to extract contacts from CRM screenshots (Name, Email, Mobile, Phone).
+*   **Government Line Filtering**: Automatically detects and flags broad organizational switchboards (e.g., ending in "00" or "000") to save time.
+*   **Intelligent Power Dialer**:
+    *   Prioritizes **Mobile** numbers over landlines.
+    *   Automatic call failure detection (busy, declined, missed).
+    *   Automatic advance to the next contact.
+*   **Dual Mode Operation**:
+    *   **Manual Mode (Bypass Vapi)**: Pure power dialer. The system dials and alerts you (visually and with sound) only when someone answers.
+    *   **AI Agent Mode**: Integrated with **Vapi** to handle calls automatically (Assistant, Voicemail, or Human-bridge modes).
+*   **Skip & Email Workflow**: A dedicated button to hang up and start a customizable countdown (default 20s), providing the contact's email for a quick manual follow-up before the next dial.
+*   **Local Persistence**: Progress and settings are saved in `localStorage`, allowing you to resume campaigns after refreshing or closing the browser.
+
+## 🛠️ Tech Stack
+
+*   **Frontend**: Next.js 16 (App Router), Tailwind CSS, Lucide Icons.
+*   **AI/OCR**: Google Generative AI (Gemini 2.0 Flash Lite).
+*   **Voice AI**: Vapi SDK.
+*   **Browser Integration**: Chrome Extension (Manifest v3) with MutationObservers for real-time Dialpad state tracking.
+
+## 📋 Prerequisites
 
 1.  **Node.js** (v18+)
-2.  **Google Gemini API Key** (for OCR)
-3.  **Vapi Public Key** (for Voice Agent)
+2.  **Google Gemini API Key** (for OCR and filtering)
+3.  **Vapi Public Key** (Optional - only for AI Agent mode)
 4.  **Google Chrome**
 
-## Setup Instructions
+## ⚙️ Setup Instructions
 
 ### 1. Web App Setup
 
@@ -18,7 +39,7 @@ This project automates conference invitation calls using a Next.js Dashboard, Ge
     ```bash
     npm install
     ```
-3.  Create a `.env` file in `web-app` with your keys:
+3.  Create a `.env` file in `web-app`:
     ```env
     GEMINI_API_KEY=your_google_gemini_key
     NEXT_PUBLIC_VAPI_PUBLIC_KEY=your_vapi_public_key
@@ -27,28 +48,27 @@ This project automates conference invitation calls using a Next.js Dashboard, Ge
     ```bash
     npm run dev
     ```
-5.  Open [http://localhost:3000](http://localhost:3000).
 
 ### 2. Chrome Extension Setup
 
 1.  Open Chrome and go to `chrome://extensions`.
-2.  Enable **Developer mode** (top right).
-3.  Click **Load unpacked**.
-4.  Select the `extension` folder in this project.
-5.  **Copy the ID** of the newly installed extension (e.g., `abcdef...`).
+2.  Enable **Developer mode**.
+3.  Click **Load unpacked** and select the `extension` folder.
+4.  **Copy the ID** of the newly installed extension.
 
-### 3. Usage
+## 📖 Usage Guide
 
-1.  On the Dashboard ([localhost:3000](http://localhost:3000)), paste the **Extension ID** into the configuration field.
-2.  Upload a screenshot of a contact list (HubSpot style) to the Dropzone.
-3.  Verify the extracted contacts in the table.
-4.  Enter Conference details and any specific prompts for the AI.
-5.  Click **Start Campaign**.
-    *   The extension will open/focus Dialpad.
-    *   It will dial the number.
-    *   Once the call is answered, Vapi will start talking automatically.
+1.  **Configure**: Paste your Extension ID into the Dashboard.
+2.  **Load Contacts**: Upload a screenshot with 4 columns: *Name, Email, Mobile Phone, Phone Number*.
+3.  **Choose Mode**:
+    *   Toggle **Bypass Vapi** ON for manual calling with connection alerts.
+    *   Toggle **Bypass Vapi** OFF if you want the AI to talk for you.
+4.  **Start**: Click **Start Campaign**. The extension will focus Dialpad and begin dialing.
+5.  **Interaction**:
+    *   When a call connects, you'll hear a double-beep and see a red alert.
+    *   Use **SKIP & EMAIL** to hang up and get 20 seconds to send a manual email before the system dials the next person.
 
-## Notes
+## ⚠️ Notes
 
--   Ensure you are logged into **Dialpad Web** (`dialpad.com`) before starting.
--   The extension uses `gemini-2.0-flash-lite-preview-02-05` by default.
+-   You must be logged into **Dialpad Web** (`dialpad.com`) for the extension to work.
+-   The AI filtering for government lines is optimized for "00" and "000" patterns but can be refined in `process-screenshot.ts`.

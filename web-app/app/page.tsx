@@ -26,6 +26,9 @@ export default function Dashboard() {
   const [callReport, setCallReport] = useState<any>(null);
   const [agentMode, setAgentMode] = useState<"assistant" | "voicemail" | "human_only">("assistant");
   const [isAlerting, setIsAlerting] = useState(false);
+  const [bypassVapi, setBypassVapi] = useState(true);
+  const [skipTimer, setSkipTimer] = useState(20);
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -67,6 +70,53 @@ export default function Dashboard() {
       console.error("Failed to play alert sound", e);
     }
   };
+
+  const sendToExtension = async (type: string, payload: any) => {
+    if (!extensionId) {
+      alert("Please enter your Chrome Extension ID first.");
+      return;
+    }
+
+    if (!(window as any).chrome?.runtime) {
+      addLog("Error: Chrome Runtime not found. Are you using Chrome?");
+      return;
+    }
+
+    try {
+      (window as any).chrome.runtime.sendMessage(extensionId, { type, payload }, (response: any) => {
+        if ((window as any).chrome.runtime.lastError) {
+          addLog(`Extension Error: ${(window as any).chrome.runtime.lastError.message}`);
+        } else {
+          addLog(`Sent to Extension: ${type}`);
+        }
+      });
+    } catch (e: any) {
+      addLog(`Communication Error: ${e.message}`);
+    }
+  };
+
+  // --- Persistence ---
+  useEffect(() => {
+    const savedContacts = localStorage.getItem("dialpad_contacts");
+    const savedIndex = localStorage.getItem("dialpad_current_index");
+    const savedMode = localStorage.getItem("dialpad_agent_mode");
+    const savedBypass = localStorage.getItem("dialpad_bypass_vapi");
+    const savedTimer = localStorage.getItem("dialpad_skip_timer");
+
+    if (savedContacts) setContacts(JSON.parse(savedContacts));
+    if (savedIndex) setCurrentContactIndex(parseInt(savedIndex));
+    if (savedMode) setAgentMode(savedMode as any);
+    if (savedBypass) setBypassVapi(savedBypass === "true");
+    if (savedTimer) setSkipTimer(parseInt(savedTimer));
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("dialpad_contacts", JSON.stringify(contacts));
+    localStorage.setItem("dialpad_current_index", currentContactIndex.toString());
+    localStorage.setItem("dialpad_agent_mode", agentMode);
+    localStorage.setItem("dialpad_bypass_vapi", bypassVapi.toString());
+    localStorage.setItem("dialpad_skip_timer", skipTimer.toString());
+  }, [contacts, currentContactIndex, agentMode, bypassVapi, skipTimer]);
 
   // --- Effects ---
 
@@ -134,7 +184,16 @@ export default function Dashboard() {
     const handleMessage = (event: MessageEvent) => {
       if (event.data.type === "DIALPAD_CALL_CONNECTED") {
         addLog("Received CALL_CONNECTED from Extension");
-        startVapiSession(event.data.payload);
+        
+        setIsAlerting(true);
+        playAlertSound();
+        setCallStatus("active");
+
+        if (!bypassVapi) {
+          startVapiSession(event.data.payload);
+        } else {
+          addLog("Vapi Bypassed. Waiting for human interaction.");
+        }
       } else if (event.data.type === "DIALPAD_CALL_FAILED") {
         addLog(`Call Failed: ${event.data.payload?.reason || "Unknown reason"}`);
         setCallStatus("ended");
@@ -143,94 +202,18 @@ export default function Dashboard() {
         }
       } else if (event.data.type === "DIALPAD_CALL_DISCONNECTED") {
         addLog("Call disconnected via Dialpad");
-        // Vapi might already handle this, but good for sync
+        setCallStatus("ended");
+        setIsAlerting(false);
+        if (campaignState === "running") {
+          addLog("Advancing to next contact...");
+          setTimeout(() => handleNextContact(), 2000);
+        }
       }
     };
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [conferenceInfo, dynamicPrompt, campaignState, currentContactIndex]);
-
-  // --- Helpers ---
-
-  const startVapiSession = async (payload: { conferenceInfo: string, dynamicPrompt: string }) => {
-    if (!vapi) {
-      addLog("Error: Vapi not initialized.");
-      return;
-    }
-    addLog(`Starting Vapi Session (${agentMode} mode)...`);
-    
-    let systemPrompt = "";
-    let firstMessage = "";
-
-    if (agentMode === "human_only") {
-      systemPrompt = "You are a brief assistant. Your only job is to tell the person to wait one second while you connect them to a representative. Do not engage in long conversation.";
-      firstMessage = "Hello, please stay on the line for one moment while I connect you...";
-    } else if (agentMode === "voicemail") {
-      systemPrompt = "You are an automated assistant. If you detect you are speaking to a voicemail or answering machine, leave a message about our upcoming conference. If a human answers, ask them if you can send them an email and then end the call.";
-      firstMessage = "Hello, I'm calling from Public Sector Network regarding our upcoming event.";
-    } else {
-      systemPrompt = `
-        You are an AI assistant for Public Sector Network. Your role is to call public sector professionals to invite them to our upcoming conferences. 
-        Your tone should be professional, polite, and articulate. 
-        You need to gather interest and, if positive, offer to send an email with more information. 
-        Adapt your pitch using the provided conference details and any specific instructions given. 
-        Handle objections gracefully. Speak naturally in English.
-        
-        --- CONFERENCE DETAILS ---
-        ${payload.conferenceInfo}
-        
-        --- SPECIFIC INSTRUCTIONS ---
-        ${payload.dynamicPrompt}
-      `;
-      firstMessage = "Hello, am I speaking with " + (contacts[currentContactIndex]?.name || "the relevant contact") + "?";
-    }
-
-    try {
-      // Vapi start expects messages or a systemPrompt depending on version. 
-      // If systemPrompt fails in types, we use the message format.
-      await vapi.start({
-        model: {
-          provider: "openai",
-          model: "gpt-4o",
-          messages: [
-            { role: "system", content: systemPrompt }
-          ]
-        },
-        voice: {
-          provider: "11labs", 
-          voiceId: "cjVigVc5kqxnPczPaOcf", 
-        },
-        firstMessage: firstMessage,
-      });
-    } catch (e: any) {
-      addLog(`Failed to start Vapi: ${e.message}`);
-    }
-  };
-
-  const sendToExtension = async (type: string, payload: any) => {
-    if (!extensionId) {
-      alert("Please enter your Chrome Extension ID first.");
-      return;
-    }
-
-    if (!(window as any).chrome?.runtime) {
-      addLog("Error: Chrome Runtime not found. Are you using Chrome?");
-      return;
-    }
-
-    try {
-      (window as any).chrome.runtime.sendMessage(extensionId, { type, payload }, (response: any) => {
-        if ((window as any).chrome.runtime.lastError) {
-          addLog(`Extension Error: ${(window as any).chrome.runtime.lastError.message}`);
-        } else {
-          addLog(`Sent to Extension: ${type}`);
-        }
-      });
-    } catch (e: any) {
-      addLog(`Communication Error: ${e.message}`);
-    }
-  };
+  }, [conferenceInfo, dynamicPrompt, campaignState, currentContactIndex, bypassVapi]);
 
   // --- Handlers ---
 
@@ -267,6 +250,27 @@ export default function Dashboard() {
     processCurrentContact();
   };
 
+  const handleSkip = () => {
+    addLog("Skipping current contact. Closing call...");
+    sendToExtension("HANGUP_CALL", {});
+    setCallStatus("ended");
+    setIsAlerting(false);
+    
+    // Start countdown for email
+    setCountdown(skipTimer);
+  };
+
+  useEffect(() => {
+    if (countdown === null) return;
+    if (countdown === 0) {
+      setCountdown(null);
+      handleNextContact();
+      return;
+    }
+    const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [countdown]);
+
   const processCurrentContact = () => {
     const contact = contacts[currentContactIndex];
     if (!contact) {
@@ -275,10 +279,23 @@ export default function Dashboard() {
       return;
     }
 
-    addLog(`Initiating call for: ${contact.name} (${contact.phone})`);
+    if ((contact as any).skip) {
+      addLog(`Skipping ${contact.name} (flagged as government line).`);
+      handleNextContact();
+      return;
+    }
+
+    const targetPhone = (contact as any).mobile || contact.phone;
+    if (!targetPhone) {
+      addLog(`No valid phone found for ${contact.name}. Skipping.`);
+      handleNextContact();
+      return;
+    }
+
+    addLog(`Initiating call for: ${contact.name} (${targetPhone})`);
     
     sendToExtension("START_CAMPAIGN_CALL", {
-      phone: contact.phone,
+      phone: targetPhone,
       conferenceInfo,
       dynamicPrompt
     });
@@ -314,6 +331,60 @@ export default function Dashboard() {
     setCurrentContactIndex(0);
     vapi?.stop();
     addLog("Campaign Stopped.");
+  };
+
+  const startVapiSession = async (payload: { conferenceInfo: string, dynamicPrompt: string }) => {
+    if (!vapi) {
+      addLog("Error: Vapi not initialized.");
+      return;
+    }
+    addLog(`Starting Vapi Session (${agentMode} mode)...`);
+    
+    let systemPrompt = "";
+    let firstMessage = "";
+
+    if (agentMode === "human_only") {
+      systemPrompt = "You are a brief assistant. Your only job is to tell the person to wait one second while you connect them to a representative. Do not engage in long conversation.";
+      firstMessage = "Hello, please stay on the line for one moment while I connect you...";
+    } else if (agentMode === "voicemail") {
+      systemPrompt = "You are an automated assistant. If you detect you are speaking to a voicemail or answering machine, leave a message about our upcoming conference. If a human answers, ask them if you can send them an email and then end the call.";
+      firstMessage = "Hello, I'm calling from Public Sector Network regarding our upcoming event.";
+    } else {
+      systemPrompt = `
+        You are an AI assistant for Public Sector Network. Your role is to call public sector professionals to invite them to our upcoming conferences. 
+        Your tone should be professional, polite, and articulate. 
+        You need to gather interest and, if positive, offer to send an email with more information. 
+        Adapt your pitch using the provided conference details and any specific instructions given. 
+        Handle objections gracefully. Speak naturally in English.
+        
+        --- CONFERENCE DETAILS ---
+        ${payload.conferenceInfo}
+        
+        --- SPECIFIC INSTRUCTIONS ---
+        ${payload.dynamicPrompt}
+      `;
+      firstMessage = "Hello, am I speaking with " + (contacts[currentContactIndex]?.name || "the relevant contact") + "?";
+    }
+
+    try {
+      // Use messages for system prompt to avoid type errors with OpenAIModel
+      await vapi.start({
+        model: {
+          provider: "openai",
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: systemPrompt }
+          ]
+        },
+        voice: {
+          provider: "11labs", 
+          voiceId: "cjVigVc5kqxnPczPaOcf", 
+        },
+        firstMessage: firstMessage,
+      });
+    } catch (e: any) {
+      addLog(`Failed to start Vapi: ${e.message}`);
+    }
   };
 
   // --- Render ---
@@ -378,15 +449,46 @@ export default function Dashboard() {
                   <button
                     key={mode}
                     onClick={() => setAgentMode(mode)}
+                    disabled={bypassVapi}
                     className={clsx(
                       "text-[10px] py-2 px-1 rounded border capitalize transition",
-                      agentMode === mode ? "bg-blue-600 text-white border-blue-600" : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                      agentMode === mode ? "bg-blue-600 text-white border-blue-600" : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100",
+                      bypassVapi && "opacity-50 cursor-not-allowed"
                     )}
                   >
                     {mode.replace("_", " ")}
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-100">
+              <div className="space-y-0.5">
+                <label className="text-sm font-semibold text-blue-900">Bypass Vapi (Manual Mode)</label>
+                <p className="text-[10px] text-blue-600">The agent will not talk. Only alerts when connected.</p>
+              </div>
+              <button 
+                onClick={() => setBypassVapi(!bypassVapi)}
+                className={clsx(
+                  "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none",
+                  bypassVapi ? "bg-blue-600" : "bg-gray-200"
+                )}
+              >
+                <span className={clsx(
+                  "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                  bypassVapi ? "translate-x-6" : "translate-x-1"
+                )} />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-gray-500">Wait time after Skip (seconds)</label>
+              <input 
+                type="number" 
+                value={skipTimer}
+                onChange={e => setSkipTimer(parseInt(e.target.value))}
+                className="w-full p-2 border rounded-md text-sm bg-gray-50"
+              />
             </div>
 
             <div>
@@ -461,11 +563,35 @@ export default function Dashboard() {
                   <p className="text-sm opacity-90">Switch to Dialpad now to take over if needed.</p>
                 </div>
               </div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleSkip}
+                  className="bg-yellow-400 text-black px-6 py-2 rounded-full text-sm font-bold hover:bg-yellow-500"
+                >
+                  SKIP & EMAIL
+                </button>
+                <button 
+                  onClick={() => setIsAlerting(false)}
+                  className="bg-white text-red-600 px-4 py-1 rounded-full text-sm font-bold"
+                >
+                  DISMISS
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Countdown for Skip */}
+          {countdown !== null && (
+            <div className="bg-yellow-50 border border-yellow-200 p-6 rounded-xl flex flex-col items-center gap-2">
+              <span className="text-yellow-800 font-bold text-lg text-center">
+                MANUAL STEP: Send email to {(contacts[currentContactIndex] as any)?.email || "contact"}
+              </span>
+              <div className="text-3xl font-black text-yellow-600">Next call in: {countdown}s</div>
               <button 
-                onClick={() => setIsAlerting(false)}
-                className="bg-white text-red-600 px-4 py-1 rounded-full text-sm font-bold"
+                onClick={() => setCountdown(0)}
+                className="text-xs text-yellow-600 underline"
               >
-                DISMISS
+                Skip waiting
               </button>
             </div>
           )}
@@ -504,14 +630,16 @@ export default function Dashboard() {
                   <tr>
                     <th className="p-3 font-medium">Status</th>
                     <th className="p-3 font-medium">Name</th>
+                    <th className="p-3 font-medium">Mobile</th>
                     <th className="p-3 font-medium">Phone</th>
-                    <th className="p-3 font-medium">Organization</th>
+                    <th className="p-3 font-medium">Email</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {contacts.map((contact, idx) => (
                     <tr key={idx} className={clsx(
                       idx === currentContactIndex ? "bg-blue-50" : "hover:bg-gray-50",
+                      (contact as any).skip && "opacity-40 grayscale",
                       "transition"
                     )}>
                       <td className="p-3">
@@ -519,10 +647,12 @@ export default function Dashboard() {
                         {idx === currentContactIndex && campaignState === "running" && <Loader2 size={16} className="animate-spin text-blue-500" />}
                         {idx === currentContactIndex && campaignState !== "running" && <div className="w-2 h-2 rounded-full bg-blue-500" />}
                         {idx > currentContactIndex && <div className="w-2 h-2 rounded-full bg-gray-300" />}
+                        {(contact as any).skip && <span className="text-[10px] text-red-500 font-bold ml-1">GOV LINE</span>}
                       </td>
                       <td className="p-3 font-medium">{contact.name}</td>
-                      <td className="p-3 text-gray-600 font-mono">{contact.phone}</td>
-                      <td className="p-3 text-gray-500">{contact.organization || "-"}</td>
+                      <td className="p-3 text-gray-600 font-mono">{(contact as any).mobile || "-"}</td>
+                      <td className="p-3 text-gray-600 font-mono">{(contact as any).phone || "-"}</td>
+                      <td className="p-3 text-gray-500">{(contact as any).email || "-"}</td>
                     </tr>
                   ))}
                   {contacts.length === 0 && (

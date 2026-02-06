@@ -6,6 +6,9 @@ console.log("Dialpad AI Driver Loaded");
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "DIAL_NUMBER") {
     dialNumber(message.phone);
+  } else if (message.type === "HANGUP_CALL") {
+    const hangupBtn = document.querySelector('[aria-label="Hang up"], [aria-label="End call"]');
+    if (hangupBtn) hangupBtn.click();
   }
 });
 

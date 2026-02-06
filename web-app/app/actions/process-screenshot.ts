@@ -26,24 +26,34 @@ export async function processScreenshot(formData: FormData): Promise<Contact[]> 
   const buffer = Buffer.from(arrayBuffer);
   const base64Image = buffer.toString("base64");
 
-  // Use the requested model. Note: "gemini-2.0-flash-lite-preview-02-05" is the specific preview version for Flash 2.0 Lite.
-  // If this specific model ID is not available in your region/tier, fall back to "gemini-1.5-flash".
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite-preview-02-05" });
+// Use the requested model.
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
 
   const prompt = `
-    You are an expert OCR assistant specialized in extracting contact information from HubSpot or similar CRM screenshots.
+    You are an expert OCR assistant specialized in extracting contact information from government CRM screenshots.
     
-    Analyze the provided image. Identify lists of contacts.
+    Analyze the provided image. Identify lists of contacts in a 4-column format: Name, Email, Mobile Phone Number, Phone Number.
+    
     For each contact found, extract:
     - Name
-    - Phone Number (format it as a clean string, e.g., "+15550123456" or "555-012-3456")
-    - Organization (if visible, otherwise omit)
+    - Email
+    - Mobile Phone Number (format it as a clean string)
+    - Phone Number (format it as a clean string)
 
-    Return ONLY a valid JSON array of objects. Do not wrap in markdown code blocks.
+    CRITICAL RULE:
+    - Many contacts are government officials. If BOTH phone numbers are general ministry/department switchboards (usually ending in "00", "000", or containing broad extensions like "General Line"), or if no personal numbers are found, flag the contact as "skip: true".
+    - Focus on finding direct mobile numbers.
+
+    Return ONLY a valid JSON array of objects.
     Example format:
     [
-      { "name": "John Doe", "phone": "+1234567890", "organization": "Acme Corp" },
-      { "name": "Jane Smith", "phone": "987-654-3210" }
+      { 
+        "name": "John Doe", 
+        "email": "john@gov.co", 
+        "mobile": "+1234567890", 
+        "phone": "+1234567000",
+        "skip": false 
+      }
     ]
   `;
 
