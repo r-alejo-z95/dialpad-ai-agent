@@ -134,11 +134,30 @@ export async function addContactsToCampaign(campaignId: string, contacts: Contac
   }
 }
 
-export async function updateContact(contactId: string, data: Partial<{ name: string, email: string, mobile: string, phone: string, skip: boolean, status: string, lastCalledAt: Date }>) {
+export async function updateContact(contactId: string, data: Partial<{ name: string, email: string, mobile: string, phone: string, skip: boolean, status: string, lastCalledAt: Date | string, outcome: string }>) {
   try {
+    // 1. Destructure to pick only updatable fields and exclude internals
+    const { 
+      name, email, mobile, phone, 
+      skip, status, lastCalledAt, outcome 
+    } = data;
+
+    // 2. Build a clean update object
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (email !== undefined) updateData.email = email;
+    if (mobile !== undefined) updateData.mobile = mobile;
+    if (phone !== undefined) updateData.phone = phone;
+    if (skip !== undefined) updateData.skip = skip;
+    if (status !== undefined) updateData.status = status;
+    if (outcome !== undefined) updateData.outcome = outcome;
+    if (lastCalledAt !== undefined) {
+      updateData.lastCalledAt = lastCalledAt ? new Date(lastCalledAt) : null;
+    }
+
     const updated = await prisma.contact.update({
       where: { id: contactId },
-      data
+      data: updateData
     });
     return { success: true, contact: updated };
   } catch (error: any) {

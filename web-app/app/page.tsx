@@ -15,8 +15,6 @@ const EXTENSION_ID = "eokbnkldempadajedgbphfmgfocnjfpl";
 export default function Dashboard() {
   const [contacts, setContacts] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [conferenceInfo, setConferenceInfo] = useState("");
-  const [dynamicPrompt, setDynamicPrompt] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [callStatus, setCallStatus] = useState<"idle" | "active">("idle");
@@ -26,6 +24,8 @@ export default function Dashboard() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const currentIndexRef = useRef(currentIndex);
   const contactsRef = useRef(contacts);
+  const activeContactIdRef = useRef<string | null>(null);
+  const lastProcessedContactId = useRef<string | null>(null);
 
   useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
   useEffect(() => { contactsRef.current = contacts; }, [contacts]);
@@ -34,14 +34,15 @@ export default function Dashboard() {
 
   useEffect(() => {
     const handleExtensionMessage = (event: MessageEvent) => {
-      // Basic event type check from Bridge/Extension
       if (event.data.type === "DIALPAD_CALL_CONNECTED") {
         addLog("Dialpad: Call connected");
         setCallStatus("active");
       } else if (event.data.type === "DIALPAD_CALL_DISCONNECTED") {
         addLog("Dialpad: Call ended");
         setCallStatus("idle");
-        handlePostCall(currentIndexRef.current);
+        if (activeContactIdRef.current) {
+          handlePostCall(activeContactIdRef.current);
+        }
       }
     };
 
@@ -54,8 +55,6 @@ export default function Dashboard() {
         if (detailed.success && detailed.campaign) {
           setContacts(detailed.campaign.contacts);
           setCurrentIndex(detailed.campaign.lastIndex || 0);
-          setConferenceInfo(detailed.campaign.conferenceInfo || "");
-          setDynamicPrompt(detailed.campaign.dynamicPrompt || "");
         }
       }
     };
@@ -84,77 +83,80 @@ export default function Dashboard() {
   const getNextStatus = (currentStatus: string) => {
     if (currentStatus === "pending") return "call 1";
     if (currentStatus.startsWith("call ")) {
-      const num = parseInt(currentStatus.split(" ")[1]);
-      return `call ${num + 1}`;
+      const parts = currentStatus.split(" ");
+      const num = parseInt(parts[parts.length - 1]);
+      return isNaN(num) ? currentStatus : `call ${num + 1}`;
     }
     return currentStatus;
   };
 
-  const handlePostCall = async (idx: number) => {
-    const contact = contactsRef.current[idx];
-    if (contact?.id) {
+  const handlePostCall = async (contactId: string) => {
+    if (lastProcessedContactId.current === contactId) return;
+    
+    const contact = contactsRef.current.find(c => c.id === contactId);
+    if (contact) {
       const newStatus = getNextStatus(contact.status);
       const now = new Date();
       
-      addLog(`Registro: ${contact.name} (${newStatus})`);
+      lastProcessedContactId.current = contactId;
+      addLog(`Sincronizando: ${contact.name} -> ${newStatus}`);
       
-      // 1. Update contact status & time
+      // Update local state
       setContacts(prev => prev.map(c => 
-        c.id === contact.id ? { ...c, status: newStatus, lastCalledAt: now.toISOString() } : c
+        c.id === contactId ? { ...c, status: newStatus, lastCalledAt: now.toISOString() } : c
       ));
       
-      await updateContact(contact.id, { 
+      // Update Database
+      const res = await updateContact(contactId, { 
         status: newStatus, 
         lastCalledAt: now 
       });
 
-      // 2. Automatically advance progress to next contact
-      const nextIdx = idx + 1;
-      if (nextIdx < contactsRef.current.length) {
-        addLog(`Progreso: Saltando al siguiente contacto...`);
-        jumpToContact(nextIdx);
-      } else {
-        addLog("Fin de la lista: No hay más contactos.");
+      if (res.success) addLog(`DB OK: ${contact.name} guardado.`);
+
+      // Advance to next if this was the focused contact
+      const finishedIdx = contactsRef.current.findIndex(c => c.id === contactId);
+      if (finishedIdx === currentIndexRef.current) {
+        jumpToContact(finishedIdx + 1);
       }
     }
   };
 
   const jumpToContact = async (idx: number) => {
-    if (idx < 0 || idx >= contacts.length) return;
+    if (idx < 0 || idx >= contactsRef.current.length) return;
     setCurrentIndex(idx);
-    const campaignId = (contacts[0] as any)?.campaignId;
+    const campaignId = (contactsRef.current[0] as any)?.campaignId;
     if (campaignId) {
       await updateCampaignIndex(campaignId, idx);
-      addLog(`Focus: Contacto #${idx + 1}`);
     }
   };
 
   const handleManualCall = async (idx: number, phone: string) => {
     const contact = contacts[idx];
-    if (contact) openHubSpotSearch(contact);
+    if (!contact) return;
+    
+    openHubSpotSearch(contact);
 
-    if (callStatus === "active") {
+    if (callStatus === "active" && activeContactIdRef.current) {
+      addLog("Cerrando sesión anterior...");
+      await handlePostCall(activeContactIdRef.current);
       (window as any).chrome.runtime.sendMessage(EXTENSION_ID, { type: "HANGUP_CALL" });
     }
 
+    activeContactIdRef.current = contact.id;
+    lastProcessedContactId.current = null;
     await jumpToContact(idx);
 
-    addLog(`Llamando a ${contact?.name} (${phone})...`);
+    addLog(`Llamando a ${contact.name} (${phone})...`);
     setTimeout(() => {
       (window as any).chrome.runtime.sendMessage(EXTENSION_ID, { 
         type: "START_CAMPAIGN_CALL", 
-        payload: { phone, conferenceInfo, dynamicPrompt } 
+        payload: { phone, conferenceInfo: "", dynamicPrompt: "" } 
       });
     }, 6000);
   };
 
   const handleNext = async () => {
-    if (callStatus === "active") {
-      addLog("Colgando y pasando al siguiente...");
-      (window as any).chrome.runtime.sendMessage(EXTENSION_ID, { type: "HANGUP_CALL" });
-      await new Promise(r => setTimeout(r, 1200)); // Wait for hangup to process
-    }
-
     const nextIdx = currentIndex + 1;
     if (nextIdx < contacts.length) {
       const nextContact = contacts[nextIdx];
@@ -173,13 +175,46 @@ export default function Dashboard() {
   const handleHangup = () => {
     (window as any).chrome.runtime.sendMessage(EXTENSION_ID, { type: "HANGUP_CALL" });
     setCallStatus("idle");
-    handlePostCall(currentIndex);
+    if (activeContactIdRef.current) {
+      handlePostCall(activeContactIdRef.current);
+    }
+  };
+
+  const startEdit = (c: any) => {
+    setEditingId(c.id);
+    setEditValues({ ...c });
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    
+    addLog(`Guardando cambios para ${editValues.name}...`);
+    
+    // Update local state
+    setContacts(prev => prev.map(c => c.id === editingId ? { ...c, ...editValues } : c));
+    
+    const res = await updateContact(editingId, editValues);
+    if (res.success) {
+      setEditingId(null);
+      addLog(`Manual OK: ${editValues.name} actualizado.`);
+      
+      // If manually marked as final, advance progress
+      if (editValues.status === "invalid" || editValues.status === "wrong_person") {
+        const currentIdx = contacts.findIndex(c => c.id === editingId);
+        if (currentIdx === currentIndex) {
+          addLog("Avance automático.");
+          jumpToContact(currentIdx + 1);
+        }
+      }
+    } else {
+      addLog(`Error al guardar: ${res.error}`);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
     setIsProcessing(true);
-    addLog("Procesando captura...");
+    addLog("Extrayendo contactos...");
     const formData = new FormData();
     formData.append("file", e.target.files[0]);
 
@@ -190,24 +225,14 @@ export default function Dashboard() {
         const dbRes = await addContactsToCampaign(currentId, result);
         if (dbRes.success && dbRes.contacts) setContacts(dbRes.contacts);
       } else {
-        const dbRes = await createCampaign(`Campaign ${new Date().toLocaleString()}`, conferenceInfo, dynamicPrompt, result);
+        const dbRes = await createCampaign(`Campaign ${new Date().toLocaleString()}`, "", "", result);
         if (dbRes.success && dbRes.campaign?.contacts) setContacts(dbRes.campaign.contacts);
       }
-      addLog(`Éxito: ${result.length} nuevos contactos.`);
+      addLog(`Éxito: ${result.length} contactos cargados.`);
     } catch (err: any) {
       addLog(`Error: ${err.message}`);
     } finally {
       setIsProcessing(false);
-    }
-  };
-
-  const saveEdit = async () => {
-    if (!editingId) return;
-    setContacts(prev => prev.map(c => c.id === editingId ? { ...c, ...editValues } : c));
-    const res = await updateContact(editingId, editValues);
-    if (res.success) {
-      setEditingId(null);
-      addLog(`Editado: ${editValues.name}`);
     }
   };
 
@@ -231,7 +256,7 @@ export default function Dashboard() {
                "px-4 py-1.5 rounded-full text-[10px] font-black flex items-center gap-2 transition-all border",
                callStatus === "active" ? "bg-red-50 text-red-600 border-red-100 animate-pulse" : "bg-emerald-50 text-emerald-600 border-emerald-100"
              )}>
-               <div className={clsx("w-2 h-2 rounded-full", callStatus === "active" ? "bg-red-600" : "bg-green-600")} />
+               <div className={clsx("w-2 h-2 rounded-full", callStatus === "active" ? "bg-red-600" : "bg-emerald-600")} />
                {callStatus === "active" ? "EN LLAMADA" : "SISTEMA LISTO"}
              </div>
              <label className="cursor-pointer bg-slate-900 hover:bg-black text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 shadow-xl transition-all">
@@ -248,10 +273,10 @@ export default function Dashboard() {
           <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 space-y-5">
             {currentContact ? (
               <>
-                <div className="flex justify-between items-start">
+                <div className="flex justify-between items-start" onDoubleClick={() => startEdit(currentContact)}>
                   <div>
-                    <h3 className="text-xl font-black text-slate-800 tracking-tight">{currentContact.name}</h3>
-                    <p className="text-xs font-bold text-slate-400 mt-1">{currentContact.email || "Sin email"}</p>
+                    <h3 className="text-xl font-black text-slate-800 tracking-tight cursor-text">{currentContact.name}</h3>
+                    <p className="text-xs font-bold text-slate-400 mt-1 cursor-text">{currentContact.email || "Sin email"}</p>
                   </div>
                   <button onClick={() => openHubSpotSearch(currentContact)} className="p-2.5 bg-orange-50 text-orange-600 rounded-2xl hover:bg-orange-100 transition-all">
                     <Globe size={20} />
@@ -292,16 +317,11 @@ export default function Dashboard() {
             ) : <div className="py-10 text-center text-slate-400 font-bold italic">Selecciona un contacto</div>}
           </div>
 
-          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 space-y-4 text-xs font-bold">
-            <h2 className="text-slate-400 uppercase tracking-widest flex items-center gap-2">Configuración</h2>
-            <div className="space-y-3">
-              <textarea value={conferenceInfo} onChange={e => setConferenceInfo(e.target.value)} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[100px] transition-all" placeholder="Info de la conferencia..." />
-              <textarea value={dynamicPrompt} onChange={e => setDynamicPrompt(e.target.value)} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 transition-all" placeholder="Instrucciones AI..." />
-            </div>
-          </div>
-
           <div className="bg-slate-900 rounded-3xl p-5 shadow-2xl overflow-hidden">
-            <div className="font-mono text-[10px] text-indigo-300 h-40 overflow-y-auto custom-scrollbar space-y-1">
+            <h2 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+              <MessageSquare size={14} /> Feed del Sistema
+            </h2>
+            <div className="font-mono text-[10px] text-indigo-300 h-60 overflow-y-auto custom-scrollbar space-y-1">
               {logs.map((log, i) => <div key={i} className="opacity-70 leading-relaxed border-l border-indigo-500/30 pl-2">{log}</div>)}
               <div ref={logsEndRef} />
             </div>
@@ -322,12 +342,12 @@ export default function Dashboard() {
               <table className="w-full text-left">
                 <thead className="bg-slate-50/50 sticky top-0 z-10 backdrop-blur-sm">
                   <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                    <th className="px-8 py-4">Progreso</th>
+                    <th className="px-8 py-4 text-center">Progreso</th>
                     <th className="px-4 py-4">Estado</th>
                     <th className="px-4 py-4">Contacto</th>
                     <th className="px-4 py-4">Última Llamada</th>
                     <th className="px-4 py-4 text-center">Llamar</th>
-                    <th className="px-8 py-4 text-right">Editar</th>
+                    <th className="px-8 py-4 text-right">Acción</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
@@ -336,11 +356,13 @@ export default function Dashboard() {
                       "group transition-all",
                       idx === currentIndex ? "bg-indigo-50/30" : "hover:bg-slate-50/50",
                       c.skip && "opacity-30 grayscale"
-                    )}>
+                    )} onDoubleClick={() => startEdit(c)}>
                       <td className="px-8 py-5">
-                        {idx < currentIndex ? <CheckCircle size={20} className="text-emerald-500" /> : 
-                         idx === currentIndex ? <div className="w-5 h-5 bg-indigo-600 rounded-full flex items-center justify-center animate-pulse shadow-lg shadow-indigo-200"><Play size={10} className="text-white ml-0.5" fill="currentColor" /></div> :
-                         <span className="text-xs font-black text-slate-300 pl-1">{idx + 1}</span>}
+                        <div className="flex items-center justify-center">
+                          {idx < currentIndex ? <CheckCircle size={20} className="text-emerald-500" /> : 
+                           idx === currentIndex ? <div className="w-5 h-5 bg-indigo-600 rounded-full flex items-center justify-center animate-pulse shadow-lg shadow-indigo-200"><Play size={10} className="text-white ml-0.5" fill="currentColor" /></div> :
+                           <span className="text-xs font-black text-slate-300">{idx + 1}</span>}
+                        </div>
                       </td>
                       <td className="px-4 py-5">
                         {editingId === c.id ? (
@@ -350,11 +372,13 @@ export default function Dashboard() {
                               <option key={i} value={`call ${i + 1}`}>CALL {i + 1}</option>
                             ))}
                             <option value="invalid">INVALID</option>
+                            <option value="wrong_person">WRONG PERSON</option>
                           </select>
                         ) : <span className={clsx("text-[9px] font-black px-2.5 py-1 rounded-lg uppercase tracking-wider", 
                           c.status === "pending" ? "bg-slate-100 text-slate-500" : 
                           c.status === "invalid" ? "bg-red-100 text-red-600" :
-                          "bg-blue-50 text-blue-600 border border-blue-100")}>{c.status}</span>}
+                          c.status === "wrong_person" ? "bg-amber-100 text-amber-600" :
+                          "bg-blue-50 text-blue-600 border border-blue-100")}>{c.status === "wrong_person" ? "CONTACTO AJENO" : c.status}</span>}
                       </td>
                       <td className="px-4 py-5">
                         {editingId === c.id ? (
@@ -364,8 +388,8 @@ export default function Dashboard() {
                           </div>
                         ) : (
                           <div>
-                            <p className="text-sm font-black text-slate-700 tracking-tight">{c.name}</p>
-                            <p className="text-[10px] font-bold text-slate-400 truncate max-w-[150px]">{c.email || "Sin email"}</p>
+                            <p className="text-sm font-black text-slate-700 tracking-tight cursor-text">{c.name}</p>
+                            <p className="text-[10px] font-bold text-slate-400 truncate max-w-[150px] cursor-text">{c.email || "Sin email"}</p>
                           </div>
                         )}
                       </td>
@@ -386,8 +410,8 @@ export default function Dashboard() {
                             </div>
                           ) : (
                             <>
-                              {c.mobile && <button onClick={() => handleManualCall(idx, c.mobile)} className="text-[9px] font-black text-slate-500 hover:text-indigo-600 flex items-center gap-2 bg-white px-3 py-1 rounded-xl border border-slate-100 hover:border-indigo-200 hover:shadow-sm transition-all"><Smartphone size={10} /> {c.mobile}</button>}
-                              {c.phone && <button onClick={() => handleManualCall(idx, c.phone)} className="text-[9px] font-black text-slate-500 hover:text-indigo-600 flex items-center gap-2 bg-white px-3 py-1 rounded-xl border border-slate-100 hover:border-indigo-200 hover:shadow-sm transition-all"><Phone size={10} /> {c.phone}</button>}
+                              {c.mobile && <button onClick={(e) => { e.stopPropagation(); handleManualCall(idx, c.mobile); }} className="text-[9px] font-black text-slate-500 hover:text-indigo-600 flex items-center gap-2 bg-white px-3 py-1 rounded-xl border border-slate-100 hover:border-indigo-200 hover:shadow-sm transition-all"><Smartphone size={10} /> {c.mobile}</button>}
+                              {c.phone && <button onClick={(e) => { e.stopPropagation(); handleManualCall(idx, c.phone); }} className="text-[9px] font-black text-slate-500 hover:text-indigo-600 flex items-center gap-2 bg-white px-3 py-1 rounded-xl border border-slate-100 hover:border-indigo-200 hover:shadow-sm transition-all"><Phone size={10} /> {c.phone}</button>}
                             </>
                           )}
                         </div>
@@ -400,8 +424,7 @@ export default function Dashboard() {
                           </div>
                         ) : (
                           <div className="flex justify-end gap-2">
-                            <button onClick={() => jumpToContact(idx)} className="p-2 text-slate-300 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all" title="Enfocar"><Play size={14} /></button>
-                            <button onClick={() => { setEditingId(c.id); setEditValues({...c}); }} className="p-2 text-slate-300 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all opacity-0 group-hover:opacity-100" title="Editar"><Edit2 size={14} /></button>
+                            <button onClick={(e) => { e.stopPropagation(); jumpToContact(idx); }} className="p-2 text-slate-300 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all" title="Enfocar"><Play size={14} /></button>
                           </div>
                         )}
                       </td>
