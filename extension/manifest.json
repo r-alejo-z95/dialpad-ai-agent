@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Dialpad AI Driver",
+  "version": "1.0",
+  "description": "Connects Next.js Dashboard with Dialpad for automated calling.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://dialpad.com/*",
+    "http://localhost:3000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://dialpad.com/*"],
+      "js": ["content.js"]
+    },
+    {
+      "matches": ["http://localhost:3000/*"],
+      "js": ["bridge.js"]
+    }
+  ],
+  "externally_connectable": {
+    "matches": ["http://localhost:3000/*"]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["content.js", "bridge.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
