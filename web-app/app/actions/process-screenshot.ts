@@ -9,7 +9,9 @@ const genAI = new GoogleGenerativeAI(apiKey || "");
 export interface Contact {
   name: string;
   phone: string;
-  organization?: string;
+  mobile?: string;
+  email?: string;
+  skip?: boolean;
 }
 
 export async function processScreenshot(formData: FormData): Promise<Contact[]> {
@@ -26,7 +28,7 @@ export async function processScreenshot(formData: FormData): Promise<Contact[]> 
   const buffer = Buffer.from(arrayBuffer);
   const base64Image = buffer.toString("base64");
 
-// Use the requested model.
+  // Use gemini-2.0-flash-lite for high quality OCR and reasoning
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
 
   const prompt = `
@@ -37,24 +39,23 @@ export async function processScreenshot(formData: FormData): Promise<Contact[]> 
     For each contact found, extract:
     - Name
     - Email
-    - Mobile Phone Number (format it as a clean string)
-    - Phone Number (format it as a clean string)
+    - Mobile Phone Number
+    - Phone Number
 
-    CRITICAL RULE:
-    - Many contacts are government officials. If BOTH phone numbers are general ministry/department switchboards (usually ending in "00", "000", or containing broad extensions like "General Line"), or if no personal numbers are found, flag the contact as "skip: true".
+    PHONE FORMATTING RULES:
+    - ALL phone numbers MUST start with the "+" symbol.
+    - If a number is 10 digits and from North America (Canada/USA), format it as +1XXXXXXXXXX.
+    - Remove all dashes, spaces, and parentheses.
+
+    GOVERNMENT LINE FILTERING RULES:
+    - Flag a contact as "skip: true" IF:
+        1. Both phone numbers are missing or invalid.
+        2. The numbers end in "00", "000", or "0000" (typical for main ministry lines).
+        3. The text context suggests it is a "General Line" or "Reception".
+        4. Use your knowledge to discern if a number is official or not. For example: +1 613-993-7267 is the Royal Mounted Police number and doesn't end in 00.
     - Focus on finding direct mobile numbers.
 
-    Return ONLY a valid JSON array of objects.
-    Example format:
-    [
-      { 
-        "name": "John Doe", 
-        "email": "john@gov.co", 
-        "mobile": "+1234567890", 
-        "phone": "+1234567000",
-        "skip": false 
-      }
-    ]
+    Return ONLY a valid JSON array of objects using these EXACT keys: "name", "email", "mobile", "phone". Do not wrap in markdown.
   `;
 
   try {
@@ -71,10 +72,46 @@ export async function processScreenshot(formData: FormData): Promise<Contact[]> 
     const response = await result.response;
     const text = response.text();
 
-    // Clean up potential markdown formatting if the model adds it despite instructions
+    // Clean up potential markdown formatting
     const cleanedText = text.replace(/```json/g, "").replace(/```/g, "").trim();
     
-    const contacts: Contact[] = JSON.parse(cleanedText);
+    let rawContacts: any[] = JSON.parse(cleanedText);
+    
+    // Normalize keys just in case
+    let contacts: Contact[] = rawContacts.map((c: any) => ({
+      name: c.name || c.Name || "",
+      email: c.email || c.Email || "",
+      mobile: c.mobile || c.Mobile || c["Mobile Phone Number"] || "",
+      phone: c.phone || c.Phone || c["Phone Number"] || "",
+      skip: c.skip || false
+    }));
+
+    // Post-processing: Ensure strict formatting and logic redundancy
+    contacts = contacts.map(contact => {
+      const cleanNumber = (num?: any) => {
+        if (!num) return "";
+        let cleaned = String(num).replace(/\D/g, ""); // Remove all non-digits
+        if (cleaned.length === 10) cleaned = "1" + cleaned; // Add +1 for Canada/USA 10-digit
+        return cleaned ? "+" + cleaned : "";
+      };
+
+      const mobile = cleanNumber(contact.mobile);
+      const phone = cleanNumber(contact.phone);
+
+      // Gov Line Check: End in 00 or 000
+      const isGovLine = (n: string) => n.endsWith("00") || n.endsWith("000");
+      
+      // If the AI flagged it, or if it meets our switchboard criteria
+      const shouldSkip = contact.skip || (!mobile && !phone) || (isGovLine(mobile) && isGovLine(phone));
+
+      return {
+        ...contact,
+        mobile,
+        phone,
+        skip: !!shouldSkip
+      };
+    });
+
     return contacts;
   } catch (error) {
     console.error("Error processing screenshot with Gemini:", error);

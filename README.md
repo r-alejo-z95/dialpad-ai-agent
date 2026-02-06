@@ -1,74 +1,66 @@
-# Dialpad AI Power Dialer & Agent
+# Dialpad AI Agent - Manual Control Panel
 
-An intelligent automation system for Dialpad that combines OCR contact extraction, smart phone number prioritization, and AI voice capabilities to streamline large-scale calling campaigns.
+A streamlined system designed to bridge the gap between CRM screenshots and Dialpad calling workflows. Currently operating as a high-efficiency manual dashboard with integrated contact intelligence.
 
-## 🚀 Key Features
+> **Note**: Full autonomous AI Agent capabilities (automated calling sequences) are planned for future releases.
 
-*   **Intelligent OCR Extraction**: Uses **Gemini 2.0 Flash Lite** to extract contacts from CRM screenshots (Name, Email, Mobile, Phone).
-*   **Government Line Filtering**: Automatically detects and flags broad organizational switchboards (e.g., ending in "00" or "000") to save time.
-*   **Intelligent Power Dialer**:
-    *   Prioritizes **Mobile** numbers over landlines.
-    *   Automatic call failure detection (busy, declined, missed).
-    *   Automatic advance to the next contact.
-*   **Dual Mode Operation**:
-    *   **Manual Mode (Bypass Vapi)**: Pure power dialer. The system dials and alerts you (visually and with sound) only when someone answers.
-    *   **AI Agent Mode**: Integrated with **Vapi** to handle calls automatically (Assistant, Voicemail, or Human-bridge modes).
-*   **Skip & Email Workflow**: A dedicated button to hang up and start a customizable countdown (default 20s), providing the contact's email for a quick manual follow-up before the next dial.
-*   **Local Persistence**: Progress and settings are saved in `localStorage`, allowing you to resume campaigns after refreshing or closing the browser.
+## 🚀 Current Features
+
+*   **Manual One-Click Dialing**: Dial any contact's mobile or office number directly from the dashboard with a single click.
+*   **Intelligent HubSpot Integration**: Automatically opens a HubSpot search tab (`email||name||phone`) as soon as you initiate a call, ensuring you have the customer's history ready.
+*   **OCR Contact Extraction**: Powered by **Gemini 2.0 Flash Lite**, instantly extract contact lists (Name, Email, Mobile, Office Phone) from HubSpot/CRM screenshots.
+*   **Smart Contact Management**:
+    *   **Accumulative Loading**: Upload multiple screenshots to build a single, persistent campaign list.
+    *   **Direct DB Editing**: Modify names, numbers, or statuses directly from the UI table.
+    *   **Auto-Status Tracking**: Contacts are automatically marked as `CALLED` in the database once a call is finished (manually or via Dialpad).
+*   **Real-time Sync**: The Chrome Extension acts as a bridge, reporting real-time call connection and disconnection states back to the dashboard.
+*   **Jump-to-Contact**: Set your progress point to any row in the table using the "Play" action.
 
 ## 🛠️ Tech Stack
 
-*   **Frontend**: Next.js 16 (App Router), Tailwind CSS, Lucide Icons.
+*   **Dashboard**: Next.js 16 (App Router), Tailwind CSS, Lucide Icons.
+*   **Database**: Prisma with PostgreSQL.
 *   **AI/OCR**: Google Generative AI (Gemini 2.0 Flash Lite).
-*   **Voice AI**: Vapi SDK.
-*   **Browser Integration**: Chrome Extension (Manifest v3) with MutationObservers for real-time Dialpad state tracking.
+*   **Browser Integration**: custom Chrome Extension (Manifest v3) with real-time DOM monitoring.
 
 ## 📋 Prerequisites
 
 1.  **Node.js** (v18+)
-2.  **Google Gemini API Key** (for OCR and filtering)
-3.  **Vapi Public Key** (Optional - only for AI Agent mode)
-4.  **Google Chrome**
+2.  **PostgreSQL** database.
+3.  **Google Gemini API Key** (for contact extraction).
+4.  **Google Chrome** with Dialpad Web logged in.
 
 ## ⚙️ Setup Instructions
 
 ### 1. Web App Setup
 
 1.  Navigate to `web-app`.
-2.  Install dependencies:
-    ```bash
-    npm install
-    ```
-3.  Create a `.env` file in `web-app`:
+2.  Install dependencies: `npm install`
+3.  Configure `.env`:
     ```env
-    GEMINI_API_KEY=your_google_gemini_key
-    NEXT_PUBLIC_VAPI_PUBLIC_KEY=your_vapi_public_key
+    DATABASE_URL="your_postgresql_url"
+    GEMINI_API_KEY="your_google_gemini_key"
+    NEXT_PUBLIC_VAPI_PUBLIC_KEY="" # For future use
     ```
-4.  Start the server:
-    ```bash
-    npm run dev
-    ```
+4.  Initialize Database: `npx prisma db push`
+5.  Start: `npm run dev`
 
-### 2. Chrome Extension Setup
+### 2. Extension Setup
 
-1.  Open Chrome and go to `chrome://extensions`.
+1.  Open `chrome://extensions`.
 2.  Enable **Developer mode**.
 3.  Click **Load unpacked** and select the `extension` folder.
-4.  **Copy the ID** of the newly installed extension.
+4.  Copy the Extension ID and hardcode it in `web-app/app/page.tsx` (constant `EXTENSION_ID`).
 
 ## 📖 Usage Guide
 
-1.  **Configure**: Paste your Extension ID into the Dashboard.
-2.  **Load Contacts**: Upload a screenshot with 4 columns: *Name, Email, Mobile Phone, Phone Number*.
-3.  **Choose Mode**:
-    *   Toggle **Bypass Vapi** ON for manual calling with connection alerts.
-    *   Toggle **Bypass Vapi** OFF if you want the AI to talk for you.
-4.  **Start**: Click **Start Campaign**. The extension will focus Dialpad and begin dialing.
-5.  **Interaction**:
-    *   When a call connects, you'll hear a double-beep and see a red alert.
-    *   Use **SKIP & EMAIL** to hang up and get 20 seconds to send a manual email before the system dials the next person.
+1.  **Load**: Upload a CRM screenshot. The AI will populate the table.
+2.  **Edit**: Use the pencil icon to fix any misread data or change statuses.
+3.  **Dial**: Click the phone icon next to any number. HubSpot will open in a new tab immediately.
+4.  **Finish**: Once you hang up in Dialpad or the dashboard, the contact status will turn to `CALLED` and the progress marker will stay on that row.
 
-## ⚠️ Notes
+## 🔮 Roadmap (Future)
 
--   You must be logged into **Dialpad Web** (`dialpad.com`) for the extension to work.
--   The AI filtering for government lines is optimized for "00" and "000" patterns but can be refined in `process-screenshot.ts`.
+*   [ ] **Autonomous AI Agent**: Integration with Vapi for fully automated outbound calling.
+*   [ ] **Power Dialer Mode**: Optional automatic advancement to the next `PENDING` contact after a notes period.
+*   [ ] **Advanced Filtering**: More granular control over contact prioritization.

@@ -1,0 +1,35 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Campaign {
+  id             String    @id @default(cuid())
+  name           String
+  conferenceInfo String?
+  dynamicPrompt  String?
+  lastIndex      Int       @default(0)
+  createdAt      DateTime  @default(now())
+  contacts       Contact[]
+}
+
+model Contact {
+  id         String   @id @default(cuid())
+  name       String
+  email      String?
+  mobile     String?
+  phone      String?
+  skip       Boolean  @default(false)
+  status     String   @default("pending") // pending, call 1, call 2... call 30, invalid
+  outcome    String?
+  lastCalledAt DateTime?
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+  createdAt  DateTime @default(now())
+}

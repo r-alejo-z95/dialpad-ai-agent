@@ -42,3 +42,5 @@ next-env.d.ts
 
 .vscode
 .gemini
+
+/app/generated/prisma

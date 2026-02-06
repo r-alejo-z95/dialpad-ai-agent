@@ -1,13 +1,26 @@
 // background.js
 
-// Store the Tab ID of the Dashboard (Next.js app) to send messages back
 let dashboardTabId = null;
 
+// Listen from Dashboard (External)
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  console.log("[Background] External message:", message.type);
+  
   if (message.type === "START_CAMPAIGN_CALL") {
-    // ... existing logic ...
+    if (sender.tab) dashboardTabId = sender.tab.id;
+    chrome.storage.local.set({ currentCall: message.payload });
+
+    chrome.tabs.query({ url: "https://dialpad.com/*" }, (tabs) => {
+      if (tabs.length > 0) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: "DIAL_NUMBER", phone: message.payload.phone });
+      } else {
+        console.warn("Dialpad tab not found");
+      }
+    });
     sendResponse({ success: true });
-  } else if (message.type === "HANGUP_CALL") {
+  } 
+  
+  else if (message.type === "HANGUP_CALL") {
     chrome.tabs.query({ url: "https://dialpad.com/*" }, (tabs) => {
       if (tabs.length > 0) {
         chrome.tabs.sendMessage(tabs[0].id, { type: "HANGUP_CALL" });
@@ -17,33 +30,26 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   }
 });
 
-// Listen for messages from Dialpad Content Script
+// Listen from Content Scripts (Internal)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log("[Background] Internal message:", message.type);
+
   if (message.type === "CALL_CONNECTED_DETECTED") {
-    console.log("Call connected detected via Content Script");
-    notifyDashboard("ACTIVATE_VAPI", true);
-  } else if (message.type === "CALL_FAILED") {
-    console.warn("Call failed:", message.reason);
-    notifyDashboard("DIALPAD_CALL_FAILED", { reason: message.reason });
-  } else if (message.type === "CALL_DISCONNECTED") {
-    console.log("Call disconnected");
-    notifyDashboard("DIALPAD_CALL_DISCONNECTED", {});
+    notifyDashboard("DIALPAD_CALL_CONNECTED", true);
+  } 
+  else if (message.type === "CALL_DISCONNECTED") {
+    notifyDashboard("DIALPAD_CALL_DISCONNECTED", false);
   }
 });
 
 function notifyDashboard(type, includeContext = false) {
-  const send = (tabId, payload) => {
-    chrome.tabs.sendMessage(tabId, { type, payload });
-  };
-
   const getPayloadAndSend = (tabId) => {
     if (includeContext) {
       chrome.storage.local.get(["currentCall"], (result) => {
-        const { conferenceInfo, dynamicPrompt } = result.currentCall || {};
-        send(tabId, { conferenceInfo, dynamicPrompt });
+        chrome.tabs.sendMessage(tabId, { type, payload: result.currentCall || {} });
       });
     } else {
-      send(tabId, typeof includeContext === 'object' ? includeContext : {});
+      chrome.tabs.sendMessage(tabId, { type, payload: {} });
     }
   };
 
