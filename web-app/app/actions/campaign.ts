@@ -183,6 +183,47 @@ export async function deleteCampaign(campaignId: string) {
   }
 }
 
+export async function deleteContact(contactId: string) {
+  try {
+    await prisma.contact.delete({ where: { id: contactId } });
+    return { success: true };
+  } catch (error: any) {
+    console.error("Error deleting contact:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function createContact(campaignId: string, data: { name: string, email?: string, mobile?: string, phone?: string }) {
+  try {
+    const contact = await prisma.contact.create({
+      data: {
+        campaignId,
+        name: data.name || "Unknown Contact",
+        email: data.email || null,
+        mobile: data.mobile || null,
+        phone: data.phone || null,
+      }
+    });
+    return { success: true, contact };
+  } catch (error: any) {
+    console.error("Error creating contact:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function updateCampaign(campaignId: string, data: Partial<{ name: string, conferenceInfo: string, dynamicPrompt: string }>) {
+  try {
+    const updated = await prisma.campaign.update({
+      where: { id: campaignId },
+      data
+    });
+    return { success: true, campaign: updated };
+  } catch (error: any) {
+    console.error("Error updating campaign:", error);
+    return { success: false, error: error.message };
+  }
+}
+
 export async function cleanupEmptyCampaigns() {
   try {
     const campaigns = await prisma.campaign.findMany({
