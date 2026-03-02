@@ -11,7 +11,7 @@ import {
   Upload, Phone, Play, Square, Loader2, CheckCircle,
   Edit2, Save, X, Trash2, PhoneCall,
   MessageSquare, User, Smartphone, Globe, Clock, FastForward,
-  Plus, Database, ChevronDown, FolderOpen
+  Plus, Database, ChevronDown, FolderOpen, Bell
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -41,6 +41,8 @@ export default function Dashboard() {
   const [editCampaignValues, setEditCampaignValues] = useState<any>({});
   const [confirmDelete, setConfirmDelete] = useState<{ type: "campaign" | "contact"; id: string; name: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [sortField, setSortField] = useState<"status" | "lastCalledAt" | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const currentIndexRef = useRef(currentIndex);
@@ -353,6 +355,30 @@ export default function Dashboard() {
   };
 
   const currentContact = contacts[currentIndex];
+
+  const toggleSort = (field: "status" | "lastCalledAt") => {
+    if (sortField === field) {
+      setSortDir(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDir("asc");
+    }
+  };
+
+  const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+  const sortedContacts = (() => {
+    const indexed = contacts.map((c, i) => ({ ...c, _originalIdx: i }));
+    if (!sortField) return indexed;
+    return [...indexed].sort((a, b) => {
+      if (sortField === "status") {
+        const cmp = (a.status || "").localeCompare(b.status || "");
+        return sortDir === "asc" ? cmp : -cmp;
+      }
+      const aTime = a.lastCalledAt ? new Date(a.lastCalledAt).getTime() : 0;
+      const bTime = b.lastCalledAt ? new Date(b.lastCalledAt).getTime() : 0;
+      return sortDir === "asc" ? aTime - bTime : bTime - aTime;
+    });
+  })();
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans">
@@ -741,15 +767,27 @@ export default function Dashboard() {
                 <thead className="bg-slate-50/50 sticky top-0 z-10 backdrop-blur-sm">
                   <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
                     <th className="px-8 py-4 text-center">Progreso</th>
-                    <th className="px-4 py-4">Estado</th>
+                    <th className="px-4 py-4">
+                      <button onClick={() => toggleSort("status")} className="flex items-center gap-1 hover:text-slate-700 transition-colors">
+                        Estado
+                        <span className="text-slate-300">{sortField === "status" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}</span>
+                      </button>
+                    </th>
                     <th className="px-4 py-4">Contacto</th>
-                    <th className="px-4 py-4">Última Llamada</th>
+                    <th className="px-4 py-4">
+                      <button onClick={() => toggleSort("lastCalledAt")} className="flex items-center gap-1 hover:text-slate-700 transition-colors">
+                        Última Llamada
+                        <span className="text-slate-300">{sortField === "lastCalledAt" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}</span>
+                      </button>
+                    </th>
                     <th className="px-4 py-4 text-center">Llamar</th>
                     <th className="px-8 py-4 text-right">Acción</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {contacts.map((c, idx) => (
+                  {sortedContacts.map((c) => {
+                    const idx = c._originalIdx;
+                    return (
                     <tr key={c.id} className={clsx(
                       "group transition-all",
                       idx === currentIndex ? "bg-indigo-50/30" : "hover:bg-slate-50/50",
@@ -793,9 +831,16 @@ export default function Dashboard() {
                       </td>
                       <td className="px-4 py-5">
                         {c.lastCalledAt ? (
-                          <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500">
-                            <Clock size={12} className="text-slate-300" />
-                            {new Date(c.lastCalledAt).toLocaleString()}
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500">
+                              <Clock size={12} className={Date.now() - new Date(c.lastCalledAt).getTime() >= THREE_DAYS_MS ? "text-amber-400" : "text-slate-300"} />
+                              {new Date(c.lastCalledAt).toLocaleString()}
+                            </div>
+                            {Date.now() - new Date(c.lastCalledAt).getTime() >= THREE_DAYS_MS && (
+                              <span className="flex items-center gap-1 text-[9px] font-black text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-lg w-fit">
+                                <Bell size={9} /> LLAMAR HOY
+                              </span>
+                            )}
                           </div>
                         ) : <span className="text-[10px] text-slate-300 italic">Nunca</span>}
                       </td>
@@ -828,7 +873,8 @@ export default function Dashboard() {
                         )}
                       </td>
                     </tr>
-                  ))}
+                  );
+                  })}
                 </tbody>
               </table>
               {contacts.length === 0 && !isProcessing && (
